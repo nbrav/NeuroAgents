@@ -17,19 +17,28 @@ SEARCH = {
     "predcode":   {"lr": (0.03, 0.18, "log"),   "lr_g": (0.002, 0.04, "log")},
     "hebb3":      {"lr": (0.008, 0.05, "log"),  "gain": (2.0, 7.0)},
     "dendritron": {"lr": (0.01, 0.08, "log")},
+    # KINESIS is morphological (analytic policy gradient, no spinal reflex) -- include it per the goal.
+    "kinesis":    {"lr": (5e-4, 5e-3, "log"),   "f_scale": (200.0, 900.0)},
 }
-# shared spinal reflex, tuned per model (each rule gets its own best-calibrated reach + avoidance reflex)
+# shared spinal reflex, tuned per model (each plausible rule gets its own best-calibrated reach +
+# avoidance reflex). KINESIS does not use it (it backprops the plant), so it is excluded there.
 REFLEX = {"reflex_avoid": (3.0, 18.0), "reflex_kp": (0.7, 1.7), "reflex_kd": (0.06, 0.28)}
 
 CLS = {"eprop": pl.EProp, "rtrrl": pl.RTRRL, "btsp": pl.BTSP, "rstdp": pl.RSTDP,
-       "predcode": pl.PredictiveCoding, "hebb3": pl.Hebb3, "dendritron": mz.Dendritron}
+       "predcode": pl.PredictiveCoding, "hebb3": pl.Hebb3, "dendritron": mz.Dendritron,
+       "kinesis": mz.Kinesis}
 
-TUNABLE = list(SEARCH.keys())      # the plausible/local rules we fine-tune
+TUNABLE = list(SEARCH.keys())      # the biologically-plausible rules + KINESIS we fine-tune (NOT the
+                                   # non-plausible baselines: BPTT-GRU / SHAC / SAC / FastTD3 / Simba / ref)
 
 
 def full_space(tag):
-    """The complete (model-specific + reflex) range dict for one model."""
-    return {**SEARCH[tag], **REFLEX}
+    """The complete range dict for one model (model-specific kwargs + spinal-reflex gains, except
+    KINESIS which has no reflex)."""
+    base = dict(SEARCH[tag])
+    if tag != "kinesis":
+        base.update(REFLEX)
+    return base
 
 
 def apply_reflex(config):
