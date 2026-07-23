@@ -461,13 +461,18 @@ def obs_norm(env):
     # Layout is [4 vision (goal_xy, fingertip_xy), n_muscles length, n_muscles velocity] on
     # BOTH plants: point mass -> 4+4+4=12, RigidTendonArm26 -> 4+6+6=16. The constants are
     # measured PER PLANT (muscle length/velocity ranges differ), so branch on the muscle count.
-    O = env.observation_space.shape[0]; nm = env.action_space.shape[0]; vis = O - 2 * nm
+    O = env.observation_space.shape[0]; nm = env.action_space.shape[0]
+    mvis = getattr(env, "_maze_vis_dim", 0)                 # 1:1-monkey maze VISION block (barriers), appended last
+    base = O - mvis                                         # the standard MotorNet obs
+    vis = base - 2 * nm
     if nm == 6:                                              # monkey arm (measured on RigidTendonArm26)
         mu  = th.cat([th.zeros(vis), th.full((nm,), 0.9), th.zeros(nm)])
         sig = th.cat([th.full((vis,), 0.3), th.full((nm,), 0.3), th.full((nm,), 3.0)])
     else:                                                    # ReluPointMass24 (original measured constants)
         mu  = th.cat([th.zeros(vis), th.full((nm,), 2.8), th.zeros(nm)])
         sig = th.cat([th.full((vis,), 0.6), th.full((nm,), 0.8), th.full((nm,), 12.)])
+    if mvis:                                                # barrier boxes live in workspace coords (~0.1 m)
+        mu = th.cat([mu, th.zeros(mvis)]); sig = th.cat([sig, th.full((mvis,), 0.1)])
     return mu.to(env.device), sig.to(env.device)
 
 # ===== from t27_append.py ===========================================

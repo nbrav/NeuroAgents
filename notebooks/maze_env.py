@@ -214,7 +214,12 @@ class MazeReach:
 EFFORT_W = 0.05        # "least movement" weight (small: position error must still dominate so RL reaches)
 
 def make_maze_env(dev, mass_set=None, conditions=None, collide_w=6.0, scale=0.85,
-                  random_cond=True, effort_w=EFFORT_W, **kw):
+                  random_cond=True, effort_w=EFFORT_W, vision=None, **kw):
+    # vision=True adds the maze's barrier layout to the observation (the monkey's VISION -> a 1:1
+    # input mapping; used by 4-11monkey-net). Default is off (the normal 4-monkey-net setup); the
+    # MZ_VISION env var flips it for whole-pipeline runs (maze_train / maze_tune / maze_eprop).
+    if vision is None:
+        vision = bool(os.environ.get("MZ_VISION"))
     """A MotorNet env running the monkey's 108 maze puzzles, on the monkey's own objective:
     reach the target fast, with the least movement and least endpoint error, WITHOUT hitting the
     barriers -- the same cursor-via-muscle task (obs = goal + proprioception, action = muscles).
@@ -254,7 +259,35 @@ def make_maze_env(dev, mass_set=None, conditions=None, collide_w=6.0, scale=0.85
                    mass_set=mass_set, **kw)
     env = mz.env_to(env, dev)
     env._init_maze(cfg, scale=scale, collide_w=collide_w, conditions=conditions)
+    if vision:
+        _add_maze_vision(env)
     return env
+
+
+def _add_maze_vision(env):
+    """MONKEY'S VISION: append the current maze's barrier layout to the observation, so the policy
+    SEES the maze the monkey saw -- a 1:1 input mapping -- instead of the barriers only entering
+    through the reflex/objective reading env internals. Each of the K padded barriers is added as
+    [cx, cy, half_w, half_h] in workspace coordinates (absent barriers = 0); the cursor (fingertip)
+    and target are already in the base obs, so the policy has the full monkey-visible scene. This is
+    an INPUT, exactly like the monkey's vision -- no privileged simulator metadata."""
+    import gymnasium as gym
+    K = env._bar.shape[1]                          # max barriers per maze (padded, e.g. 9)
+    env._maze_vis_dim = K * 4
+    _orig = env.get_obs
+
+    def get_obs(*a, **k):
+        obs = _orig(*a, **k); B = obs.shape[0]
+        cond = getattr(env, "_cond", None)
+        if cond is None or cond.shape[0] != B:     # not yet drawn (MotorNet's internal reset): zeros
+            vis = th.zeros(B, env._maze_vis_dim, device=obs.device)
+        else:
+            vis = env._bar[cond].reshape(B, -1)    # (B, K*4) absolute barrier boxes = the visible walls
+        return th.cat([obs, vis], -1)
+
+    env.get_obs = get_obs
+    d = env.observation_space.shape[0] + env._maze_vis_dim
+    env.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(d,), dtype=np.float32)
 
 
 def demo():
