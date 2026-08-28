@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 NB_DIR = os.path.dirname(os.path.abspath(__file__))
 NLB = os.path.join(NB_DIR, "..", "nlb_tools")
-BEST_JSON = os.path.join(NB_DIR, "..", "save_monkey", "maze_best_hp.json")
+BEST_JSON = os.environ.get("MZ_BEST_JSON") or os.path.join(NB_DIR, "..", "save_monkey", "maze_best_hp.json")
 
 
 def maze_trainable(config):
@@ -32,7 +32,7 @@ def maze_trainable(config):
     pl.configure(mz.morph_head(MZT), mz.obs_norm, mz.OpCounter)
     th.manual_seed(0)
     L = maze_hp.build(config["model"], config, MZT)
-    L.fit(MZT, config["budget"], lambda *a, **k: None, batch=32)
+    L.fit(MZT, config["budget"], lambda *a, **k: None, batch=int(config["batch"]))
     with th.no_grad():
         o, i = MZV.reset(options={"batch_size": 256}); st = L.init_state(256)
         n = int(MZV.max_ep_duration / MZV.dt); hit = 0.0
@@ -49,7 +49,13 @@ def _space(tag, budget):
     import maze_hp
     d = {}
     for k, rng in maze_hp.full_space(tag).items():
-        d[k] = tune.loguniform(rng[0], rng[1]) if (len(rng) == 3 and rng[2] == "log") else tune.uniform(rng[0], rng[1])
+        if len(rng) == 3 and rng[2] == "log":
+            d[k] = tune.loguniform(rng[0], rng[1])
+        elif len(rng) == 3 and rng[2] == "int":
+            d[k] = tune.randint(rng[0], rng[1] + 1)     # inclusive integer knob (n_infer / rank / hidden)
+        else:
+            d[k] = tune.uniform(rng[0], rng[1])
+    d["batch"] = tune.choice([64, 128, 256, 512])       # OPTIMAL BATCH IS MODEL-SPECIFIC -> tune it per model
     d.update(model=tag, budget=budget, nb_dir=NB_DIR, nlb=NLB)
     return d
 
@@ -58,15 +64,19 @@ def tune_all(samples=18, budget=6000, gpu_frac=0.33, models=None, verbose=True):
     """Per-model Ray fine-tuning across both GPUs. Returns {tag: best_hp}; also writes BEST_JSON."""
     import ray
     from ray import tune
+    from ray.tune.search.optuna import OptunaSearch          # SOTA: TPE Bayesian search over the wide space
     import maze_hp
     tags = models or maze_hp.TUNABLE
     if ray.is_initialized(): ray.shutdown()
-    ray.init(num_gpus=2, ignore_reinit_error=True, log_to_driver=False, include_dashboard=False)
-    best, rows = {}, []
+    _ng = len([x for x in os.environ.get("CUDA_VISIBLE_DEVICES", "0,1").split(",") if x != ""])
+    ray.init(num_gpus=_ng, ignore_reinit_error=True, log_to_driver=False, include_dashboard=False)
+    best = json.load(open(BEST_JSON)) if os.path.exists(BEST_JSON) else {}   # MERGE: a subset re-tune keeps the rest
+    rows = []
     for tag in tags:
         tuner = tune.Tuner(tune.with_resources(maze_trainable, {"gpu": gpu_frac}),
                            param_space=_space(tag, budget),
-                           tune_config=tune.TuneConfig(num_samples=samples, metric="score", mode="max"))
+                           tune_config=tune.TuneConfig(num_samples=samples, metric="score", mode="max",
+                                                       search_alg=OptunaSearch(metric="score", mode="max")))
         res = tuner.fit()
         b = res.get_best_result(metric="score", mode="max")
         best[tag] = {k: float(v) for k, v in b.config.items() if k not in ("model", "budget", "nb_dir", "nlb")}
@@ -83,6 +93,9 @@ def tune_all(samples=18, budget=6000, gpu_frac=0.33, models=None, verbose=True):
 
 
 if __name__ == "__main__":
+    _tags = [t for t in os.environ.get("MZ_TAGS", "").split(",") if t] or None   # subset override
     tune_all(samples=int(os.environ.get("MZ_TUNE_SAMPLES", 18)),
-             budget=int(os.environ.get("MZ_TUNE_BUDGET", 6000)))
+             budget=int(os.environ.get("MZ_TUNE_BUDGET", 6000)),
+             gpu_frac=float(os.environ.get("MZ_GPU_FRAC", 0.33)),   # smaller => more trials pack per GPU
+             models=_tags)
     print(f"\nsaved tuned hyperparameters -> {BEST_JSON}")

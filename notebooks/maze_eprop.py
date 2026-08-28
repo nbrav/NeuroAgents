@@ -238,27 +238,39 @@ def qualitative(policy, maze_id=None, test_idx=None, out=None, fps=14, seed=7):
         maze_id = pool[int(np.random.default_rng(seed).integers(len(pool)))]
     env = _env([maze_id], False)
     obs, info = env.reset(options={"batch_size": 1}); obs = obs.to(DEVICE); h = policy.init_hidden(1)
-    n = int(env.max_ep_duration / env.dt); path = [env.states["fingertip"][0].cpu().numpy()]
+    n = int(env.max_ep_duration / env.dt)
+    path = [env.states["fingertip"][0].cpu().numpy()]
+    inside = [float(env.maze_collision(env.states["fingertip"])[0]) > 0]   # is the cursor in a wall?
     for _ in range(n):
         a, h = policy.act(obs, h); obs, *_ = env.step(a); obs = obs.to(DEVICE)
         path.append(env.states["fingertip"][0].cpu().numpy())
-    path = np.array(path)
-    bar = env._bar[env._cond][0].cpu().numpy(); msk = env._msk[env._cond][0].cpu().numpy()
-    tg = env._tg[env._cond][0].cpu().numpy()
-    fig, ax = plt.subplots(figsize=(4.2, 4.2))
-    for k in range(len(bar)):
-        if msk[k]:
-            cx, cy, hw, hh = bar[k]; ax.add_patch(plt.Rectangle((cx - hw, cy - hh), 2 * hw, 2 * hh, fc="#5A6472", alpha=.8))
-    ax.plot(*tg, "*", ms=18, color="#D1495B", zorder=6); ax.plot(*path[0], "o", ms=7, color="#2A9D8F", zorder=6)
-    (ln,) = ax.plot([], [], "-", color="#e76f51", lw=2.2); (dot,) = ax.plot([], [], "o", ms=6, color="#e76f51")
-    m = 0.02; ax.set_xlim(min(path[:, 0].min(), tg[0]) - m, max(path[:, 0].max(), tg[0]) + m)
-    ax.set_ylim(min(path[:, 1].min(), tg[1]) - m, max(path[:, 1].max(), tg[1]) + m)
-    ax.set_aspect("equal"); ax.axis("off")
+        inside.append(float(env.maze_collision(env.states["fingertip"])[0]) > 0)
+    path = np.array(path); inside = np.array(inside)
+    bar = env._bar[env._cond][0].cpu().numpy(); msk = env._msk[env._cond][0].cpu().numpy() > 0
+    tg = env._tg[env._cond][0].cpu().numpy(); real = bar[msk]
+    fig, ax = plt.subplots(figsize=(5, 5))
+    for cx, cy, hw, hh in real:
+        ax.add_patch(plt.Rectangle((cx - hw, cy - hh), 2 * hw, 2 * hh, fc="#5A6472", ec="#2b2b2b", lw=0.6, alpha=.9))
+    ax.plot(*tg, "*", ms=20, color="#D1495B", zorder=6, label="target")
+    ax.plot(*path[0], "o", ms=9, color="#2A9D8F", zorder=6, label="start (centre)")
+    (ln,) = ax.plot([], [], "-", color="#457b9d", lw=2.0, zorder=4)
+    (dot,) = ax.plot([], [], "o", ms=8, zorder=7)
+    # axis frames the WHOLE maze (barriers + path + target), so nothing is cut off
+    xs = [path[:, 0].min(), path[:, 0].max(), tg[0]]; ys = [path[:, 1].min(), path[:, 1].max(), tg[1]]
+    if len(real):
+        xs += [(real[:, 0] - real[:, 2]).min(), (real[:, 0] + real[:, 2]).max()]
+        ys += [(real[:, 1] - real[:, 3]).min(), (real[:, 1] + real[:, 3]).max()]
+    m = 0.05
+    ax.set_xlim(min(xs) - m, max(xs) + m); ax.set_ylim(min(ys) - m, max(ys) + m)
+    ax.set_aspect("equal"); ax.axis("off"); ax.legend(loc="upper left", fontsize=8, framealpha=.9)
     key = maze_env.extract_configs()["keys"][maze_id]
-    ax.set_title(f"e-prop · MC-Maze {key[0]} v{key[1]} · {int(msk.sum())} barriers", fontsize=10)
+    ax.set_title(f"e-prop · MC-Maze {key[0]} v{key[1]} · {int(msk.sum())} barriers "
+                 f"(cursor turns red inside a wall)", fontsize=9)
 
     def _f(i):
-        ln.set_data(path[:i + 1, 0], path[:i + 1, 1]); dot.set_data([path[i, 0]], [path[i, 1]]); return ln, dot
+        ln.set_data(path[:i + 1, 0], path[:i + 1, 1]); dot.set_data([path[i, 0]], [path[i, 1]])
+        dot.set_color("#e63946" if inside[i] else "#457b9d")     # RED = colliding with a wall
+        return ln, dot
     anim = animation.FuncAnimation(fig, _f, frames=len(path), interval=1000 / fps, blit=True)
     out = out or os.path.join(_HERE, "save", f"eprop_maze_{maze_id}.gif")
     os.makedirs(os.path.dirname(out), exist_ok=True)

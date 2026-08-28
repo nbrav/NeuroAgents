@@ -7,22 +7,30 @@ the comparison stays fair; only each model's own learning machinery + its reflex
 import motor_zoo as mz
 import plausible_learners as pl
 
-# tag -> {hyperparameter: (low, high) uniform, or (low, high, "log") loguniform}
-# model-specific kwargs (consumed by the class __init__) + the shared spinal-reflex gains below.
+# tag -> {hyperparameter: (low, high) uniform | (low, high, "log") loguniform | (low, high, "int") integer}
+# WIDE, per-model search over EACH rule's real knobs (learning rate + dynamics/plasticity constants +
+# modest capacity), so the fine-tuner explores genuinely DIFFERENT parameterisations toward the best
+# achievable accuracy -- not the same narrow band repeated. Capacity knobs (kinesis hidden, dendritron
+# rank) let the local rules add representational power; param counts are reported so fairness stays visible.
+# CAPACITY (Nr = reservoir units, base RES_NR=4096 -> ~12.3k plastic params) and REGULARISATION
+# (lam = L2 weight decay on the readout) are tuned per rule, so each can trade bias vs variance and
+# land a bit above/below 12.6k params -- faithful to each paper (same rule + fixed sparse reservoir),
+# just sized to its best. rstdp has no L2 term; kinesis is a small MLP tuned by its hidden width.
+_NR = (3072, 6144, "int"); _LAM = (1e-5, 1e-2, "log")
 SEARCH = {
-    "eprop":      {"lr": (0.008, 0.05, "log"),  "tau_e": (0.02, 0.15)},
-    "rtrrl":      {"lr": (0.004, 0.03, "log"),  "tau_e": (0.05, 0.25)},
-    "btsp":       {"lr": (0.008, 0.06, "log"),  "tau_slow": (0.5, 1.8)},
-    "rstdp":      {"lr": (0.0008, 0.01, "log"), "tau_c": (0.05, 0.25)},
-    "predcode":   {"lr": (0.03, 0.18, "log"),   "lr_g": (0.002, 0.04, "log")},
-    "hebb3":      {"lr": (0.008, 0.05, "log"),  "gain": (2.0, 7.0)},
-    "dendritron": {"lr": (0.01, 0.08, "log")},
+    "eprop":      {"lr": (0.003, 0.08, "log"),  "tau_e": (0.02, 0.30),  "beta": (0.1, 0.9),  "rho_a": (0.80, 0.99), "Nr": _NR, "lam": _LAM},
+    "rtrrl":      {"lr": (0.002, 0.05, "log"),  "tau_e": (0.03, 0.40),  "Nr": _NR, "lam": _LAM},
+    "btsp":       {"lr": (0.004, 0.10, "log"),  "tau_slow": (0.3, 2.5), "p_plateau": (0.3, 1.0), "Nr": _NR, "lam": _LAM},
+    "rstdp":      {"lr": (0.0003, 0.02, "log"), "tau_c": (0.03, 0.40),  "vth": (0.10, 0.60), "Nr": _NR},
+    "predcode":   {"lr": (0.01, 0.30, "log"),   "lr_g": (0.001, 0.06, "log"), "n_infer": (3, 12, "int"), "Nrep": _NR, "lam": _LAM},
+    "hebb3":      {"lr": (0.004, 0.08, "log"),  "gain": (1.5, 9.0),     "tau_e": (0.2, 1.5), "Nr": _NR, "lam": _LAM},
+    "dendritron": {"lr": (0.005, 0.12, "log"),  "rho": (0.9, 1.4), "a": (0.2, 0.8), "sin": (0.5, 1.5), "rank": (8, 64, "int"), "Nr": _NR, "lam": _LAM},
     # KINESIS is morphological (analytic policy gradient, no spinal reflex) -- include it per the goal.
-    "kinesis":    {"lr": (5e-4, 5e-3, "log"),   "f_scale": (200.0, 900.0)},
+    "kinesis":    {"lr": (3e-4, 8e-3, "log"),   "f_scale": (150.0, 1000.0), "hidden": (48, 72, "int")},   # ~9k-18.8k params (matches the reservoir band; 57 = 12.3k baseline)
 }
 # shared spinal reflex, tuned per model (each plausible rule gets its own best-calibrated reach +
 # avoidance reflex). KINESIS does not use it (it backprops the plant), so it is excluded there.
-REFLEX = {"reflex_avoid": (3.0, 18.0), "reflex_kp": (0.7, 1.7), "reflex_kd": (0.06, 0.28)}
+REFLEX = {"reflex_avoid": (2.0, 22.0), "reflex_kp": (0.5, 2.0), "reflex_kd": (0.04, 0.35)}
 
 CLS = {"eprop": pl.EProp, "rtrrl": pl.RTRRL, "btsp": pl.BTSP, "rstdp": pl.RSTDP,
        "predcode": pl.PredictiveCoding, "hebb3": pl.Hebb3, "dendritron": mz.Dendritron,
@@ -50,7 +58,13 @@ def apply_reflex(config):
 
 
 def build(tag, config, env):
-    """Build a learner with its tuned hyperparameters (reflex gains set first, model kwargs applied)."""
+    """Build a learner with its tuned hyperparameters (reflex gains set first, model kwargs applied).
+    Integer-typed knobs (n_infer, rank, hidden) are rounded so a continuous sample maps to a valid arg."""
     apply_reflex(config)
-    kw = {k: config[k] for k in SEARCH[tag] if config.get(k) is not None}
+    kw = {}
+    for k, rng in SEARCH[tag].items():
+        v = config.get(k)
+        if v is None:
+            continue
+        kw[k] = int(round(v)) if (len(rng) == 3 and rng[2] == "int") else v
     return CLS[tag](env, **kw)

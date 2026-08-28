@@ -10,7 +10,7 @@ import nbformat
 from nbclient import NotebookClient
 
 ND = os.path.dirname(os.path.abspath(__file__))
-NB = os.path.join(ND, "4-monkey-net.ipynb")
+NB = os.environ.get("MN_NB") or os.path.join(ND, "4-monkey-net.ipynb")   # MN_NB reuses this for 4-11monkey-net
 
 nb = nbformat.read(NB, as_version=4)
 # allow_errors=False so a broken cell surfaces instead of baking a traceback; long timeout for the

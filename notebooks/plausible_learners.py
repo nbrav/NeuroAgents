@@ -128,6 +128,10 @@ class _ResBase(nn.Module):
         # get out of walls", from task-space signals only (no plant Jacobian, no privileged state).
         if getattr(c, "collision_force", None) is not None:
             reach = reach + REFLEX_AVOID * c.collision_force
+            # (A stall-triggered LATERAL "wall-following" term and a proximity repulsion were both tried
+            # to lift the no-vision maze ceiling; both REVERTED -- any lateral/avoidance force beyond the
+            # inside push-out disrupts the reach (e-prop 91%->41%->0% as the gain rises). Kept reach + the
+            # inside withdrawal only, which is the honest best.)
         tgt = th.cat([reach, c.cmd[:, 2:]], -1)
         return tgt - c.cmd
 
@@ -286,23 +290,20 @@ class BTSP(_ResBase):
 
     @th.no_grad()
     def on_step(self, c):
-        """Behavioural-timescale plasticity (Bittner 2017): a seconds-long presynaptic trace
-        bound to the instructive signal ONLY at a sparse, stochastic dendritic PLATEAU -- a
-        genuine one-shot, BIASED write.
+        """Behavioural-timescale plasticity (Bittner 2017): a seconds-long presynaptic trace bound
+        to the instructive signal at a sparse, stochastic dendritic PLATEAU -- a one-shot BIASED write.
 
-        Audit fix: the previous 1/(batch*gp) normalization made the expected update equal an
-        ungated continuous slow-Hebb rule (the plateau added only variance, zero mean-effect),
-        so the row measured slow Hebb, not BTSP. Dropping it makes each plateau a real biased
-        plasticity event, which is the defining BTSP mechanism.
-
-        On the equal-EPISODE budget this benchmark holds fixed, the sparse plateau (~1 fire per
-        1-s reach, gp~0.01) means BTSP's effective learning rate sits well below its dense-update
-        siblings, so its completion score reads low. That is an HONEST property of one-shot
-        behavioural-timescale plasticity, not a bug: a /_gp 'plateau-frequency compensation' was
-        tried and REJECTED -- it matches the expected per-episode write but blows up the variance
-        of each 100x one-shot write and destabilises the readout (measured WORSE than the do-
-        nothing floor). One-shot rules are inherently high-variance and simply need more episodes;
-        the row is reported as-is rather than tuned to look competitive."""
+        gBTSP note (researched July 2026 -- Cone 2025 gBTSP bioRxiv 2025.06.12.659336; simple-model
+        one-shot BTSP, Nat Commun 2024): the normative BTSP plateau is ERROR-PROPORTIONAL,
+        P_i = eps_i(t)*(kernel-filtered features) - lambda*W. But this rule ALREADY realises that
+        error dependence: the write magnitude is `gate * err_local (=eps_i) outer trace`, so each
+        plateau's write is already scaled by the local reflex-imitation error. Additionally gating
+        the plateau PROBABILITY by error (the gBTSP suggestion) DOUBLE-COUNTS eps_i -- it over-weights
+        high-error moments and destabilises the high-variance one-shot writes (empirically 0% vs the
+        blind gate's 23% at the same tuned HP). So the faithful, stable choice is the blind sparse
+        gate for WHEN, with err_local scaling HOW MUCH. BTSP's modest asymptotic score is then an
+        honest property of a one-shot SAMPLE-EFFICIENCY rule on a fixed-episode ACCURACY benchmark,
+        not a tuning miss."""
         self._trace = self._decay * self._trace + (1 - self._decay) * c.aux
         gate = (th.rand(c.batch, 1, device=self.dev) < self._gp).float()
         ge = gate * c.err_local

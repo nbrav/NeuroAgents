@@ -323,19 +323,26 @@ class Probe:
     `learner.fit` calls probe(learner, episodes) whenever it has consumed more
     experience; the probe decides when to actually run an evaluation.
     """
-    def __init__(self, env, every_eps, budget, batch=256):
+    def __init__(self, env, every_eps, budget, batch=256, track_best=False):
         self.env, self.every, self.budget = env, every_eps, budget
         self.batch = batch
         self.curve = []          # (episodes, err_cm)
         self._next = 0
         self.t0 = time.perf_counter()
         self.peak_mem = 0
+        self.track_best = track_best    # EARLY STOPPING: keep the lowest-val-err checkpoint
+        self.best_err = float("inf")
+        self.best_state = None
 
     def __call__(self, learner, episodes, force=False):
         if episodes < self._next and not force: return False
         self._next = episodes + self.every
         err = evaluate(self.env, learner, batch=256)
         self.curve.append((episodes, err))
+        if self.track_best and err < self.best_err and isinstance(learner, th.nn.Module):
+            import copy
+            self.best_err = err
+            self.best_state = copy.deepcopy(learner.state_dict())   # snapshot the best-val model
         if th.cuda.is_available():
             self.peak_mem = max(self.peak_mem, th.cuda.max_memory_allocated())
         return True

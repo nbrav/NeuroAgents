@@ -57,14 +57,26 @@ def arm_zero_shot(learner):
     return out
 
 
+import maze_hp
+# REACHING-specific tuned HP (arm_tune.py); the maze HP does NOT transfer to reaching, so this file
+# is the reaching min-max result. Overridable for ablations via MN_BEST_JSON.
+_BEST_HP_JSON = os.environ.get("MN_BEST_JSON") or os.path.join(REPO, "save_monkey", "reaching_best_hp.json")
+BEST_HP = json.load(open(_BEST_HP_JSON)) if os.path.exists(_BEST_HP_JSON) else {}
+
 def run_one(cls, tag, budget=BUDGET, bs=32):
     th.manual_seed(0); np.random.seed(0)
-    L = cls(env)
-    pr = mz.Probe(env, every_eps=max(1, budget // 40), budget=budget)
+    if tag in BEST_HP:
+        L = maze_hp.build(tag, BEST_HP[tag], env)          # Optuna-tuned HP (plausible + KINESIS)
+        bs = int(BEST_HP[tag].get("batch", bs))
+    else:
+        L = cls(env)                                       # baselines untouched
+    pr = mz.Probe(env, every_eps=max(1, budget // 40), budget=budget, track_best=True)   # early stop on val
     if th.cuda.is_available():
         th.cuda.reset_peak_memory_stats()
     t0 = time.perf_counter()
     L.fit(env, budget, pr, batch=bs)
+    if getattr(pr, "best_state", None) is not None:
+        L.load_state_dict(pr.best_state)                   # best-val checkpoint (avoids late divergence)
     train_s = time.perf_counter() - t0
     m = mz.eval_metrics(env, L)
     zs = arm_zero_shot(L)
